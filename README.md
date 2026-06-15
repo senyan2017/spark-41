@@ -33,6 +33,28 @@ scripts that can output in that format.
 
 Invoke help with `spark -h`.
 
+### input format
+
+spark accepts both integers and decimal (floating-point) numbers, and
+fully supports negative values:
+
+    spark -5 -3 -1 0 2
+    ▁▃▅▆█
+
+    spark 0.1 0.5 0.9
+    ▁▄█
+
+Decimal precision is preserved during normalization, so small variations
+in monitoring data (e.g. temperature offsets, latency deltas) remain
+visible in the sparkline rather than being flattened to zero.
+
+Values may be separated by commas, spaces, or a mix of both. Empty
+fields produced by consecutive delimiters (`1,,3`), leading/trailing
+delimiters (`,1,5,`), or extra whitespace are silently skipped.
+Non-numeric tokens are skipped with a warning on stderr. If no valid
+numeric data is found, spark prints an error and exits with a non-zero
+status.
+
 ## cooler usage
 
 There's a lot of stuff you can do.

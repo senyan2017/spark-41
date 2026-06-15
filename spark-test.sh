@@ -76,3 +76,103 @@ it_equalizes_at_midtier_on_same_data() {
 
   test $graph = '▅▅▅▅'
 }
+
+it_handles_all_negative_data() {
+  graph="$($spark -5,-3,-1)"
+
+  test $graph = '▁▄█'
+}
+
+it_handles_all_negative_spread() {
+  graph="$($spark -10,-7,-5,-3,-1)"
+
+  test $graph = '▁▃▄▆█'
+}
+
+it_handles_mixed_positive_negative() {
+  graph="$($spark -10,0,10)"
+
+  test $graph = '▁▄█'
+}
+
+it_handles_negative_and_positive_spread() {
+  graph="$($spark -5,-3,-1,0,2)"
+
+  test $graph = '▁▃▅▆█'
+}
+
+it_handles_decimals_with_precision() {
+  graph="$($spark 0.1,0.5,0.9)"
+
+  test $graph = '▁▄█'
+}
+
+it_handles_small_decimal_variations() {
+  graph="$($spark 0.4,0.6,0.9)"
+
+  test $graph = '▁▃█'
+}
+
+it_handles_negative_decimals() {
+  graph="$($spark -2.5,-1.0,0.5)"
+
+  test $graph = '▁▄█'
+}
+
+it_handles_all_negative_constant() {
+  graph="$($spark -3,-3,-3)"
+
+  test $graph = '▅▅▅'
+}
+
+it_handles_all_zeros() {
+  graph="$($spark 0,0,0)"
+
+  test $graph = '▅▅▅'
+}
+
+it_handles_single_value() {
+  graph="$($spark 42)"
+
+  test $graph = '▅'
+}
+
+it_skips_empty_fields() {
+  graph="$($spark 1,,3,5)"
+
+  test $graph = '▁▄█'
+}
+
+it_handles_consecutive_commas() {
+  graph="$($spark 1,,,5)"
+
+  test $graph = '▁█'
+}
+
+it_handles_trailing_comma() {
+  graph="$($spark 1,5,)"
+
+  test $graph = '▁█'
+}
+
+it_handles_leading_comma() {
+  graph="$($spark ,1,5)"
+
+  test $graph = '▁█'
+}
+
+it_warns_on_non_numeric_input() {
+  graph="$($spark 1,abc,3 2>/dev/null)"
+
+  test $graph = '▁█'
+}
+
+it_fails_on_no_valid_data() {
+  $spark abc,def 2>/dev/null
+  test $? -ne 0
+}
+
+it_fails_on_empty_input() {
+  $spark ,,, 2>/dev/null
+  test $? -ne 0
+}
