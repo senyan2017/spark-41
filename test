@@ -1,18 +1,60 @@
 #!/bin/sh
 #
-# Run roundup tests for spark.
+# Run tests for spark.
+# Supports roundup if available, otherwise falls back to a built-in runner.
 #
 
-roundup=$(which roundup)
+roundup=$(which roundup 2>/dev/null)
 
-[ ! -z $roundup ] || {
-  cat <<MESSAGE 1>&2 ;
-error: roundup missing
+if [ -n "$roundup" ]; then
+  $roundup ./*-test.sh
+else
+  # Built-in minimal test runner
+  passed=0
+  failed=0
+  errors=""
 
-Check out https://github.com/bmizerany/roundup for instructions on installing roundup.
-MESSAGE
+  echo "spark test suite (built-in runner)"
+  echo "========================================="
 
-  exit 1;
-}
+  # Source the test definitions
+  # We need to extract test functions from spark-test.sh
+  # Skip the roundup shebang and describe line, source the rest
 
-$roundup ./*-test.sh
+  _test_file="./spark-test.sh"
+
+  # Extract function names
+  _funcs=$(grep '^it_' "$_test_file" | sed 's/().*//')
+
+  # Source the test file (ignore the roundup shebang/describe)
+  # We override describe and before to be no-ops
+  describe() { :; }
+  before() { :; }
+
+  . "$_test_file" 2>/dev/null
+
+  for func in $_funcs; do
+    printf "  %-50s " "$func"
+    if output=$($func 2>&1); then
+      echo "[PASS]"
+      passed=$((passed + 1))
+    else
+      echo "[FAIL]"
+      if [ -n "$output" ]; then
+        echo "    -> $output"
+      fi
+      failed=$((failed + 1))
+      errors="$errors $func"
+    fi
+  done
+
+  echo "========================================="
+  total=$((passed + failed))
+  echo "Tests: $total | Passed: $passed | Failed: $failed"
+
+  if [ $failed -gt 0 ]; then
+    echo "Failed tests:$errors"
+    exit 1
+  fi
+  exit 0
+fi
