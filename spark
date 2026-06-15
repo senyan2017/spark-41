@@ -37,38 +37,79 @@ _echo()
   fi
 }
 
-spark()
+# Sanitizes a raw set of data into a clean, space-separated list of integers.
+#
+# Real-world data is messy: it arrives from pipes mixing spaces, commas,
+# semicolons, tabs and newlines, and it often carries blanks, labels or units
+# ("n/a", "cpu", "99%"). Rather than choke on the first odd token and ruin the
+# whole line, we normalize the common separators and keep only well-formed
+# numbers, quietly skipping anything else.
+#
+# $@ - The raw data we'd like to clean.
+_spark_clean()
 {
-  local n numbers=
+  local n out= data="$*"
+  local num_re='^-?([0-9]+\.?[0-9]*|\.[0-9]+)$'
+  local int_re='^-?[0-9]+$'
 
-  # find min/max values
-  local min=0xffffffff max=0
+  # treat commas, semicolons and tabs as separators too (whitespace and
+  # newlines already split during word-splitting below)
+  data=${data//,/ }
+  data=${data//;/ }
+  data=${data//$'\t'/ }
 
-  for n in ${@//,/ }
+  for n in $data
   do
+    # skip blanks, labels, units and other dirty tokens
+    [[ $n =~ $num_re ]] || continue
     # on Linux (or with bash4) we could use `printf %.0f $n` here to
     # round the number but that doesn't work on OS X (bash3) nor does
     # `awk '{printf "%.0f",$1}' <<< $n` work, so just cut it off
     n=${n%.*}
-    (( n < min )) && min=$n
-    (( n > max )) && max=$n
-    numbers=$numbers${numbers:+ }$n
+    # a bare fraction like ".5" truncates to nothing; drop it rather than crash
+    [[ $n =~ $int_re ]] || continue
+    out=$out${out:+ }$n
   done
 
-  # print ticks
-  local ticks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  _echo "$out"
+}
 
-  # use a high tick if data is constant
-  (( min == max )) && ticks=(▅ ▆)
+spark()
+{
+  local n numbers
 
-  local f=$(( (($max-$min)<<8)/(${#ticks[@]}-1) ))
-  (( f < 1 )) && f=1
+  numbers=$(_spark_clean "$@")
 
+  # nothing usable was parsed out; bail quietly instead of erroring
+  [ -z "$numbers" ] && { _echo; return 0; }
+
+  # find min/max values
+  local min=0xffffffff max=0
   for n in $numbers
   do
-    _echo -n ${ticks[$(( ((($n-$min)<<8)/$f) ))]}
+    (( n < min )) && min=$n
+    (( n > max )) && max=$n
   done
-  _echo
+
+  # pick the tick set: pretty unicode blocks by default, or a plain ASCII
+  # ramp (SPARK_ASCII) for terminals/fonts that mangle the block glyphs
+  local ticks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  [ -n "$SPARK_ASCII" ] && ticks=('.' ':' '-' '=' '+' '*' '#' '@')
+
+  # use a high tick if data is constant
+  if (( min == max )); then
+    if [ -n "$SPARK_ASCII" ]; then ticks=('=' '+'); else ticks=(▅ ▆); fi
+  fi
+
+  local f=$(( ((max-min)<<8)/(${#ticks[@]}-1) ))
+  (( f < 1 )) && f=1
+
+  local out=
+  for n in $numbers
+  do
+    out=$out${ticks[$(( (((n-min)<<8)/f) ))]}
+  done
+  _echo "$out"
 }
 
 # If we're being sourced, don't worry about such things
@@ -80,7 +121,23 @@ if [ "$BASH_SOURCE" == "$0" ]; then
     cat <<EOF
 
     USAGE:
-      $spark [-h|--help] VALUE,...
+      $spark [options] VALUE,...
+      ... | $spark [options]
+
+    OPTIONS:
+      -h, --help            Show this help text.
+      -l, --label TEXT      Prefix the sparkline with a label, so you can tell
+                            at a glance which metric a line belongs to.
+      -a, --ascii           Use a plain ASCII ramp (.:-=+*#@) instead of unicode
+                            blocks, for terminals/fonts that mangle the glyphs.
+      -v, --show-values     Print the (cleaned) numeric values after the graph.
+      -s, --sep SEP         Separator used to join values with --show-values
+                            (default: a space). Try --sep , for reports.
+
+    NOTES:
+      Input is forgiving: spaces, commas, semicolons, tabs and newlines all work
+      as separators, and blanks, labels or units (e.g. "n/a", "99%") are skipped
+      rather than breaking the whole line. Decimals are truncated to integers.
 
     EXAMPLES:
       $spark 1 5 22 13 53
@@ -89,15 +146,60 @@ if [ "$BASH_SOURCE" == "$0" ]; then
       ▁▂▃▄▂█
       echo 9 13 5 17 1 | $spark
       ▄▆▂█▁
+      $spark --label cpu 10 20 5 40
+      cpu  ▂▄▁█
+      $spark --ascii 1 5 22 13 53
+      ..-:@
+      $spark --show-values --sep , 10 20 5 40
+      ▂▄▁█  10,20,5,40
 EOF
   }
 
-  # show help for no arguments if stdin is a terminal
-  if { [ -z "$1" ] && [ -t 0 ] ; } || [ "$1" == '-h' ] || [ "$1" == '--help' ]
+  label=
+  show_values=
+  value_sep=' '
+
+  # parse options; the first non-flag (or a negative number) ends parsing
+  while [ $# -gt 0 ]
+  do
+    case "$1" in
+      -h|--help)        help; exit 0 ;;
+      -a|--ascii)       SPARK_ASCII=1 ;;
+      -v|--show-values) show_values=1 ;;
+      -l|--label)       shift; label="$1" ;;
+      --label=*)        label="${1#*=}" ;;
+      -s|--sep)         shift; value_sep="$1" ;;
+      --sep=*)          value_sep="${1#*=}" ;;
+      --)               shift; break ;;
+      -[0-9]*|-.[0-9]*) break ;;   # a negative number is data, not a flag
+      -*)               ;;         # unknown flag: ignore, stay pipe-friendly
+      *)                break ;;   # data begins here
+    esac
+    shift
+  done
+
+  # show help for no data if stdin is a terminal (nothing to read otherwise)
+  if [ $# -eq 0 ] && [ -t 0 ]
   then
     help
     exit 0
   fi
 
-  spark ${@:-`cat`}
+  # remaining args are data; otherwise read it from stdin
+  if [ $# -gt 0 ]; then
+    data="$*"
+  else
+    data="$(cat)"
+  fi
+
+  graph="$(spark $data)"
+
+  if [ -n "$show_values" ]; then
+    values="$(_spark_clean $data)"
+    [ -n "$values" ] && graph="$graph  ${values// /$value_sep}"
+  fi
+
+  [ -n "$label" ] && graph="$label  $graph"
+
+  _echo "$graph"
 fi
