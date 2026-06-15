@@ -16,18 +16,45 @@
 # Examples:
 #
 #   spark 1 5 22 13 53
-#   # => ▁▁▃▂▇
+#   # => ▁▁▃▂█
 #
 #   spark 0 30 55 80 33 150
-#   # => ▁▂▃▅▂▇
+#   # => ▁▂▃▄▂█
 #
 #   spark -h
 #   # => Prints the spark help text.
-
-# Generates sparklines.
 #
-# $1 - The data we'd like to graph.
-_echo()
+# ---------------------------------------------------------------------------
+# Conventions (the rules that used to be buried in the implementation):
+#
+#   * Separators        Input may be comma- and/or space-separated; commas are
+#                       treated exactly like spaces. So "1,2 3" is three values.
+#   * Decimals          A value's fractional part is TRUNCATED, never rounded
+#                       (5.9 -> 5). Rounding via printf/awk is avoided so the
+#                       script behaves identically on bash 3 / OS X.
+#   * Range             min/max are derived from the (truncated) values and
+#                       drive the vertical scale.
+#   * Charset switch    Normally the full 8-glyph ramp (▁..█) is used. When every
+#                       value is identical (min == max, a "constant" series) a
+#                       2-glyph mid-height charset (▅ ▆) is used instead, so a
+#                       flat line does not render as a misleading row of ▁.
+#   * Scaling           Fixed-point integer math (values shifted left by 8) is
+#                       used instead of floats, again for portability. The scale
+#                       factor is clamped to >= 1 to avoid divide-by-zero.
+#   * stdin vs argv     When run directly with no arguments, data is read from
+#                       stdin. Help is shown only when there is no argv AND stdin
+#                       is an interactive terminal, or when -h/--help is passed.
+#   * source vs exec    Sourcing this file defines ONLY the spark() pipeline and
+#                       its _spark_* helpers; the CLI/help machinery runs solely
+#                       on direct execution and never leaks into a sourcing shell.
+# ---------------------------------------------------------------------------
+
+# Portable echo. printf is used because `echo -n`/`echo -e` behaviour varies
+# across shells.
+#
+# $1 - "-n" to suppress the trailing newline, otherwise the first value.
+# $* - The text to print.
+_spark_echo()
 {
   if [ "X$1" = "X-n" ]; then
     shift
@@ -37,46 +64,106 @@ _echo()
   fi
 }
 
-spark()
+# --- Layer: input parsing --------------------------------------------------
+# Normalise separators so the rest of the pipeline only ever sees
+# whitespace-separated tokens. Commas become spaces; runs of whitespace are
+# collapsed by ordinary word-splitting downstream.
+#
+# $* - Raw values (comma- and/or space-separated).
+# stdout - The same values, space-separated.
+_spark_tokenize()
 {
-  local n numbers=
-
-  # find min/max values
-  local min=0xffffffff max=0
-
-  for n in ${@//,/ }
-  do
-    # on Linux (or with bash4) we could use `printf %.0f $n` here to
-    # round the number but that doesn't work on OS X (bash3) nor does
-    # `awk '{printf "%.0f",$1}' <<< $n` work, so just cut it off
-    n=${n%.*}
-    (( n < min )) && min=$n
-    (( n > max )) && max=$n
-    numbers=$numbers${numbers:+ }$n
-  done
-
-  # print ticks
-  local ticks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
-
-  # use a high tick if data is constant
-  (( min == max )) && ticks=(▅ ▆)
-
-  local f=$(( (($max-$min)<<8)/(${#ticks[@]}-1) ))
-  (( f < 1 )) && f=1
-
-  for n in $numbers
-  do
-    _echo -n ${ticks[$(( ((($n-$min)<<8)/$f) ))]}
-  done
-  _echo
+  echo "${*//,/ }"
 }
 
-# If we're being sourced, don't worry about such things
-if [ "$BASH_SOURCE" == "$0" ]; then
+# --- Layer: numeric normalisation ------------------------------------------
+# Reduce each token to the integer spark graphs on, by truncating any decimal
+# part. Truncation (not rounding) is deliberate; see the Conventions block.
+#
+# $@ - Whitespace-separated tokens (call UNQUOTED to word-split).
+# stdout - Space-separated integers.
+_spark_normalize()
+{
+  local n out=
+  for n in "$@"
+  do
+    n=${n%.*}
+    out=$out${out:+ }$n
+  done
+  echo "$out"
+}
+
+# --- Layer: charset selection ----------------------------------------------
+# Pick the glyph ramp for a series based on its range. A constant series
+# (min == max) gets a mid-height 2-glyph charset; everything else gets the
+# full low->high ramp.
+#
+# $1 - min, $2 - max
+# stdout - Space-separated glyphs, low to high.
+_spark_charset()
+{
+  if (( $1 == $2 ))
+  then
+    echo "▅ ▆"
+  else
+    echo "▁ ▂ ▃ ▄ ▅ ▆ ▇ █"
+  fi
+}
+
+# --- Layer: rendering ------------------------------------------------------
+# Turn a list of integers into a sparkline: derive the range, choose a charset,
+# then map every value onto a glyph using fixed-point scaling.
+#
+# $@ - Normalised integers (call UNQUOTED to word-split).
+# stdout - The sparkline followed by a newline.
+_spark_render()
+{
+  local n min max ticks f
+
+  # derive the range (0xffffffff is just a "larger than any input" sentinel)
+  min=0xffffffff max=0
+  for n in "$@"
+  do
+    (( n < min )) && min=$n
+    (( n > max )) && max=$n
+  done
+
+  # choose the glyphs, then compute the fixed-point scale factor
+  ticks=( $(_spark_charset "$min" "$max") )
+  f=$(( ((max - min) << 8) / (${#ticks[@]} - 1) ))
+  (( f < 1 )) && f=1
+
+  for n in "$@"
+  do
+    _spark_echo -n "${ticks[$(( ((n - min) << 8) / f ))]}"
+  done
+  _spark_echo
+}
+
+# Public API: generate a sparkline for a set of data.
+#
+# This is a thin orchestrator over the three layers above; reading it
+# top-to-bottom is the whole pipeline. $tokens/$normalized are intentionally
+# left UNQUOTED so word-splitting carries the values between stages.
+#
+# $@ - The data we'd like to graph (comma- and/or space-separated).
+spark()
+{
+  local tokens normalized
+  tokens=$(_spark_tokenize "$@")
+  normalized=$(_spark_normalize $tokens)
+  _spark_render $normalized
+}
+
+# --- Layer: CLI / help -----------------------------------------------------
+# Everything below runs ONLY when spark is executed directly. When the file is
+# sourced, $BASH_SOURCE != $0, so none of this (nor its helpers) is defined.
+if [ "$BASH_SOURCE" = "$0" ]; then
   # Prints the help text for spark.
-  help()
+  _spark_help()
   {
-    local spark=$(basename $0)
+    local spark
+    spark=$(basename "$0")
     cat <<EOF
 
     USAGE:
@@ -92,12 +179,19 @@ if [ "$BASH_SOURCE" == "$0" ]; then
 EOF
   }
 
-  # show help for no arguments if stdin is a terminal
-  if { [ -z "$1" ] && [ -t 0 ] ; } || [ "$1" == '-h' ] || [ "$1" == '--help' ]
-  then
-    help
-    exit 0
-  fi
+  # Entry point: decide between help, argv data, and stdin data, then graph.
+  _spark_main()
+  {
+    # show help for no arguments if stdin is a terminal, or on -h/--help
+    if { [ -z "$1" ] && [ -t 0 ] ; } || [ "$1" = '-h' ] || [ "$1" = '--help' ]
+    then
+      _spark_help
+      exit 0
+    fi
 
-  spark ${@:-`cat`}
+    # with no argv, fall back to reading the data from stdin
+    spark "${@:-$(cat)}"
+  }
+
+  _spark_main "$@"
 fi

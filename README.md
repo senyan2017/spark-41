@@ -29,7 +29,7 @@ whatever you'd like). It's designed to be used in conjunction with other
 scripts that can output in that format.
 
     spark 0 30 55 80 33 150
-    ▁▂▃▅▂▇
+    ▁▂▃▄▂█
 
 Invoke help with `spark -h`.
 
@@ -62,7 +62,7 @@ Code visualization. The number of characters of `spark` itself, by line, ignorin
 › awk '{ print length($0) }' spark |
   grep -Ev 0 |
   spark
-  ▁▁▁▁▅▁▇▁▁▅▁▁▁▁▁▂▂▁▃▃▁▁▃▁▃▁▂▁▁▂▂▅▂▃▂▃▃▁▆▃▃▃▁▇▁▁▂▂▂▇▅▁▂▂▁▇▁▃▁▇▁▂▁▇▁▁▆▂▁▇▁▂▁▁▂▅▁▂▁▆▇▇▂▁▂▁▁▁▂▂▁▅▁▂▁▁▃▁▃▁▁▁▃▂▂▂▁▁▅▂▁▁▁▁▂▂▁▁▁▂▂
+  ▂▁▁▃▁▄▁▇▁▁▄▁▇▂▁▁▁▂▂▁▃▃▁▁▃▁▇▆▁▇▇▇▆▇▅█▇▇▇▇▇▇▇▇▇▇▂▁▆▃▂▁▃▁▁▂▁▁▇▆▇▁▄▂▁▂▁▇▇▇▁▆▃▂▁▂▂▁▂▂▁▂▁▇▆▇▂▁▄▂▁▂▁▂▁▄▁▁▇▇▆▁▅▄▂▁▃▇▂▂▁▃▃▁▆▄▂▁▅▁▂▁▅▁▆▇▆▁▆▁▁▃▃▃▁▇▇▇▃▃▂▁▂▃▂▃▂▃▂▂▃▂▁▁▇▂▁▆▇▁▂▁▁▂▁▂▁
 ```
 
 Since it's just a shell script, you could pop it in your prompt, too:
