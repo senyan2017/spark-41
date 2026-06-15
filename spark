@@ -1,103 +1,188 @@
 #!/usr/bin/env bash
 #
-# spark
+# spark — sparklines for your shell
 # https://github.com/holman/spark
 #
-# Generates sparklines for a set of data.
+# ── Internal Architecture ─────────────────────────────────────────────
 #
-# Here's a good web-based sparkline generator that was a bit of inspiration
-# for spark:
+# Single-file, layered design.  Each layer has one job and can be
+# exercised independently when the file is sourced.
 #
-#   https://datacollective.org/sparkblocks
+#   Layer 0  Constants       — tick character arrays
+#   Layer 1  spark_parse     — raw input → clean integer list
+#   Layer 2  spark_render    — integer list → sparkline string
+#   Layer 3  spark           — public API  (parse → render)
+#   Layer 4  spark_help      — help / usage text
+#   Layer 5  CLI dispatch    — guarded by BASH_SOURCE check
 #
-# spark takes a comma-separated or space-separated list of data and then prints
-# a sparkline out of it.
+# Sourcing this file exposes:
+#   spark  spark_parse  spark_render  spark_help
+#   SPARK_TICKS  SPARK_FLAT_TICKS
 #
-# Examples:
+# Executing this file directly runs the CLI dispatcher (Layer 5).
 #
-#   spark 1 5 22 13 53
-#   # => ▁▁▃▂▇
+# ── Input Conventions ─────────────────────────────────────────────────
 #
-#   spark 0 30 55 80 33 150
-#   # => ▁▂▃▅▂▇
+#   • Arguments and stdin are interchangeable.
+#     If positional args are present they win; stdin is never read.
+#     If no args and stdin is not a tty, stdin is read.
+#     If no args and stdin is a tty, the CLI shows help and exits.
 #
-#   spark -h
-#   # => Prints the spark help text.
+#   • Delimiters: commas and whitespace are equivalent.
+#     "1,2,3" == "1 2 3" == "1, 2,  3"
+#
+#   • Decimals are truncated (not rounded): 5.9 → 5, -3.7 → -3
+#
+# ── Constant-Data Rule ────────────────────────────────────────────────
+#
+#   When every value is identical (min == max) the normal 8-level tick
+#   set is replaced with a 2-level set (▅ ▆) so the output sits at
+#   mid-height instead of collapsing to a flat baseline.
+#
+# ── Examples ──────────────────────────────────────────────────────────
+#
+#   spark 1 5 22 13 53        → ▁▁▃▂█
+#   spark 0,30,55,80,33,150   → ▁▂▃▄▂█
+#   echo 9 13 5 17 1 | spark  → ▄▆▂█▁
+#   spark -h                   → prints help text
 
-# Generates sparklines.
+# ── Layer 0: Constants ────────────────────────────────────────────────
+
+# Standard 8-level tick characters (lowest → highest).
+SPARK_TICKS=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+
+# Tick characters used when all input values are equal.
+# Two levels so the bar sits at mid-height rather than the floor.
+SPARK_FLAT_TICKS=(▅ ▆)
+
+# ── Layer 1: Input Parsing ────────────────────────────────────────────
 #
-# $1 - The data we'd like to graph.
-_echo()
-{
-  if [ "X$1" = "X-n" ]; then
-    shift
-    printf "%s" "$*"
+# spark_parse [VALUE ...]
+#
+#   Accepts numbers from positional args or stdin (args take precedence).
+#   Normalizes delimiters (commas ↔ spaces), collapses extra whitespace,
+#   and truncates decimal parts.
+#
+#   Outputs a single line of space-separated integers to stdout.
+#   Returns 1 if no input is available (no args and stdin is a tty).
+#
+#   Examples:
+#     spark_parse 1,2,3       → "1 2 3"
+#     spark_parse 5.5 20.9    → "5 20"
+#     echo "4 8" | spark_parse → "4 8"
+
+spark_parse() {
+  local raw
+  if [ $# -gt 0 ]; then
+    raw="$*"
+  elif [ ! -t 0 ]; then
+    raw="$(cat)"
   else
-    printf "%s\n" "$*"
+    return 1
   fi
+
+  # Replace commas with spaces; unquoted expansion collapses whitespace.
+  local n result=()
+  for n in ${raw//,/ }; do
+    result+=("${n%.*}")
+  done
+  printf '%s' "${result[*]}"
 }
 
-spark()
-{
-  local n numbers=
+# ── Layer 2: Rendering ────────────────────────────────────────────────
+#
+# spark_render INTEGERS
+#
+#   Takes a space-separated string of integers (as produced by
+#   spark_parse) and emits a sparkline to stdout.
+#
+#   Internally computes min/max, selects the appropriate tick set
+#   (standard or flat), and maps each value linearly across the ticks.
+#
+#   Returns 1 if the input string is empty.
+#
+#   Examples:
+#     spark_render "1 2 3"     → "▁▄█"
+#     spark_render "5 5 5"     → "▅▅▅"
 
-  # find min/max values
-  local min=0xffffffff max=0
+spark_render() {
+  local numbers="$1"
+  [ -z "$numbers" ] && return 1
 
-  for n in ${@//,/ }
-  do
-    # on Linux (or with bash4) we could use `printf %.0f $n` here to
-    # round the number but that doesn't work on OS X (bash3) nor does
-    # `awk '{printf "%.0f",$1}' <<< $n` work, so just cut it off
-    n=${n%.*}
+  local n min=0xffffffff max=0
+  for n in $numbers; do
     (( n < min )) && min=$n
     (( n > max )) && max=$n
-    numbers=$numbers${numbers:+ }$n
   done
 
-  # print ticks
-  local ticks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  # Select tick set: flat (constant data) or standard.
+  local ticks=("${SPARK_TICKS[@]}")
+  (( min == max )) && ticks=("${SPARK_FLAT_TICKS[@]}")
 
-  # use a high tick if data is constant
-  (( min == max )) && ticks=(▅ ▆)
-
-  local f=$(( (($max-$min)<<8)/(${#ticks[@]}-1) ))
+  # Compute the scaling factor.
+  # We shift left by 8 bits to keep arithmetic in integer space.
+  local f=$(( (($max - $min) << 8) / (${#ticks[@]} - 1) ))
   (( f < 1 )) && f=1
 
-  for n in $numbers
-  do
-    _echo -n ${ticks[$(( ((($n-$min)<<8)/$f) ))]}
+  # Map each value to its tick character.
+  local result=
+  for n in $numbers; do
+    result="${result}${ticks[$(( ((($n - $min) << 8) / $f) ))]}"
   done
-  _echo
+  printf '%s\n' "$result"
 }
 
-# If we're being sourced, don't worry about such things
-if [ "$BASH_SOURCE" == "$0" ]; then
-  # Prints the help text for spark.
-  help()
-  {
-    local spark=$(basename $0)
-    cat <<EOF
+# ── Layer 3: Public API ───────────────────────────────────────────────
+#
+# spark [VALUE ...]
+#
+#   Convenience wrapper: parses input then renders a sparkline.
+#   Accepts the same arguments as the CLI (or reads stdin).
+#
+#   This is the primary function callers should use when sourcing spark.
 
-    USAGE:
-      $spark [-h|--help] VALUE,...
+spark() {
+  local parsed
+  parsed="$(spark_parse "$@")" || return 1
+  spark_render "$parsed"
+}
 
-    EXAMPLES:
-      $spark 1 5 22 13 53
-      ▁▁▃▂█
-      $spark 0,30,55,80,33,150
-      ▁▂▃▄▂█
-      echo 9 13 5 17 1 | $spark
-      ▄▆▂█▁
+# ── Layer 4: Help ─────────────────────────────────────────────────────
+#
+# spark_help [NAME]
+#
+#   Prints usage information.  NAME defaults to "spark" and is used
+#   as the command name shown in the examples.
+
+spark_help() {
+  local name="${1:-spark}"
+  cat <<EOF
+
+  USAGE:
+    $name [-h|--help] VALUE,...
+
+  EXAMPLES:
+    $name 1 5 22 13 53
+    ▁▁▃▂█
+    $name 0,30,55,80,33,150
+    ▁▂▃▄▂█
+    echo 9 13 5 17 1 | $name
+    ▄▆▂█▁
 EOF
-  }
+}
 
-  # show help for no arguments if stdin is a terminal
-  if { [ -z "$1" ] && [ -t 0 ] ; } || [ "$1" == '-h' ] || [ "$1" == '--help' ]
-  then
-    help
+# ── Layer 5: CLI Dispatch ─────────────────────────────────────────────
+#
+# This block only executes when the script is run directly (not sourced).
+# It handles:
+#   • No arguments + tty stdin  → show help
+#   • -h / --help               → show help
+#   • Everything else           → run spark with remaining arguments
+
+if [ "$BASH_SOURCE" = "$0" ]; then
+  if { [ -z "$1" ] && [ -t 0 ]; } || [ "$1" = '-h' ] || [ "$1" = '--help' ]; then
+    spark_help "$(basename "$0")"
     exit 0
   fi
-
-  spark ${@:-`cat`}
+  spark "$@"
 fi

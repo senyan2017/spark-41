@@ -29,7 +29,7 @@ whatever you'd like). It's designed to be used in conjunction with other
 scripts that can output in that format.
 
     spark 0 30 55 80 33 150
-    ▁▂▃▅▂▇
+    ▁▂▃▄▂█
 
 Invoke help with `spark -h`.
 
