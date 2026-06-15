@@ -29,7 +29,20 @@ whatever you'd like). It's designed to be used in conjunction with other
 scripts that can output in that format.
 
     spark 0 30 55 80 33 150
-    ▁▂▃▅▂▇
+    ▁▂▃▄▂█
+
+The ticks always span the range between the smallest and largest value, so
+negative numbers and decimals work just as well as positive integers:
+
+    spark -8 -3 -5 -1
+    ▁▆▄█
+
+    spark 0.4 0.5 0.9
+    ▁▂█
+
+Empty fields from repeated or trailing separators are skipped (`1,,2,` is read
+as `1 2`). A value that isn't a number (for example `abc` or `1e3`) is reported
+as an error and no graph is drawn, so spark never silently charts bad data.
 
 Invoke help with `spark -h`.
 

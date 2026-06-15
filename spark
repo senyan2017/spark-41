@@ -39,21 +39,62 @@ _echo()
 
 spark()
 {
-  local n numbers=
+  local n numbers= min= max=
 
-  # find min/max values
-  local min=0xffffffff max=0
+  # Bash has no floating-point arithmetic, so we work in fixed-point: every
+  # value is parsed into an integer scaled by 10^scale_digits. This keeps
+  # fractional differences (e.g. 0.4 vs 0.9) instead of truncating the decimal
+  # part away, while the tick math below stays scale-invariant for integers so
+  # existing whole-number graphs are unchanged.
+  local scale_digits=3
+  local scale=$(( 10 ** scale_digits ))
 
+  # A valid value is an optionally-signed integer or decimal: 5, -3, +7, 0.4,
+  # 5.5, .5 or 3. -- anything else (abc, 1e3, 1.2.3) is rejected below.
+  local re='^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)$'
+
+  # Parse, validate and scale each value while tracking the real min/max.
+  # Splitting on whitespace already drops empty fields produced by repeated or
+  # trailing separators (e.g. "1,,2," -> 1 2), so those are ignored silently.
   for n in ${@//,/ }
   do
-    # on Linux (or with bash4) we could use `printf %.0f $n` here to
-    # round the number but that doesn't work on OS X (bash3) nor does
-    # `awk '{printf "%.0f",$1}' <<< $n` work, so just cut it off
-    n=${n%.*}
-    (( n < min )) && min=$n
-    (( n > max )) && max=$n
+    [ -z "$n" ] && continue
+
+    if [[ ! $n =~ $re ]]; then
+      printf "spark: invalid value: '%s' (expected a number like 5, -3 or 0.4)\n" "$n" >&2
+      return 1
+    fi
+
+    # Convert the decimal string to a scaled integer (value * scale).
+    local sign=1 int frac
+    case $n in
+      -*) sign=-1; n=${n#-} ;;
+      +*) n=${n#+} ;;
+    esac
+    int=${n%%.*}
+    if [[ $n == *.* ]]; then frac=${n#*.}; else frac=; fi
+    int=${int:-0}
+    # Right-pad the fraction with zeros, then keep scale_digits of precision.
+    frac=${frac}0000000000
+    frac=${frac:0:scale_digits}
+    # Force base-10 (10#) so leading zeros are not read as octal.
+    n=$(( (10#$int * scale + 10#$frac) * sign ))
+
+    if [ -z "$min" ]; then
+      min=$n max=$n
+    else
+      (( n < min )) && min=$n
+      (( n > max )) && max=$n
+    fi
     numbers=$numbers${numbers:+ }$n
   done
+
+  # Refuse to draw anything if no usable numbers were given (e.g. the input was
+  # only blanks or separators) rather than printing a misleading graph.
+  if [ -z "$numbers" ]; then
+    printf "spark: no numeric data provided\n" >&2
+    return 1
+  fi
 
   # print ticks
   local ticks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
@@ -89,6 +130,22 @@ if [ "$BASH_SOURCE" == "$0" ]; then
       ▁▂▃▄▂█
       echo 9 13 5 17 1 | $spark
       ▄▆▂█▁
+      $spark -8 -3 -5 -1
+      ▁▆▄█
+      $spark 0.4 0.5 0.9
+      ▁▂█
+
+    NOTES:
+      Values are separated by commas or whitespace. Negative numbers and
+      decimals are fully supported: the ticks span the range between the
+      smallest and largest value, so an all-negative series (e.g. -8 -3 -1)
+      is graphed correctly and decimals such as 0.4 and 0.9 stay distinct
+      instead of collapsing to the same height.
+
+      Empty fields from repeated or trailing separators are ignored, so
+      "1,,2," is read as "1 2". A non-numeric value (e.g. "abc" or "1e3")
+      is reported as an error and no graph is drawn, rather than being
+      silently treated as zero.
 EOF
   }
 

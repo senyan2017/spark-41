@@ -76,3 +76,59 @@ it_equalizes_at_midtier_on_same_data() {
 
   test $graph = '▅▅▅▅'
 }
+
+it_charts_all_negative_data() {
+  data="-5 -3 -8 -1"
+  graph="$($spark $data)"
+
+  test $graph = '▄▆▁█'
+}
+
+it_charts_mixed_sign_data() {
+  data="-2 0 2"
+  graph="$($spark $data)"
+
+  test $graph = '▁▄█'
+}
+
+it_keeps_decimals_distinct() {
+  data="0.4 0.9"
+  graph="$($spark $data)"
+
+  test $graph = '▁█'
+}
+
+it_charts_pure_decimal_series() {
+  data="0.1,0.4,0.5,0.9"
+  graph="$($spark $data)"
+
+  test $graph = '▁▃▄█'
+}
+
+it_ignores_empty_fields() {
+  graph="$($spark '1,,2,')"
+
+  test $graph = '▁█'
+}
+
+it_ignores_surrounding_whitespace() {
+  graph="$($spark ' 1  2 ')"
+
+  test $graph = '▁█'
+}
+
+it_rejects_non_numeric_input() {
+  if out="$($spark 1 2 foo 4 2>/dev/null)"; then
+    return 1
+  fi
+
+  test -z "$out"
+}
+
+it_rejects_input_with_no_numbers() {
+  if out="$($spark ' , , ' 2>/dev/null)"; then
+    return 1
+  fi
+
+  test -z "$out"
+}
